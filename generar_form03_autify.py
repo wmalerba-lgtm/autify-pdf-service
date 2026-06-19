@@ -1,469 +1,325 @@
 #!/usr/bin/env python3
 """
-AUTIFY — Generador de Formulario "03" (Solicitud de Inscripción Contrato
-Prendario, Decreto 15348/46 ratificado por Ley 12962) v1.0
+AUTIFY — Generador de Formulario 03 v1.0
 
-Reutiliza los parsers de generar_prenda_autify_v7 (parsear_solicitud,
-parsear_carta_aprobacion, parsear_mutuo_prendario) para no duplicar la
-extracción de datos. El Excel "Parametros 03" (hoja del mismo libro
-parametros_contrato_prenda.xlsx) es la única fuente de verdad para
-coordenadas y valores.
+Lee coordenadas y valores de la hoja "Parametros 03" del Excel.
+Reutiliza parsers y helpers de generar_prenda_autify_v7.
 
 Uso:
-  python3 generar_form03_autify.py <solicitud.pdf> <template.pdf> <output.pdf> \
-                                    <xlsx_path> [tipo UVA_PI|UVA_PRE|FIJA_PI|FIJA_PRE] \
-                                    [carta_aprobacion.pdf] [mutuo_prendario.pdf]
+  python3 generar_form03_autify.py <solicitud.pdf> <template03.pdf> \
+          <output.pdf> <xlsx> [tipo UVA_PI|UVA_PRE|FIJA_PI|FIJA_PRE]
 
-Notas:
-  - Por ahora solo están definidos los valores para UVA_PI / UVA_PRE.
-    FIJA_PI / FIJA_PRE quedan "(por completar)" — el script avisa y no
-    imprime esos campos hasta que se definan en el Excel.
-  - Campos con valor "COMPLETAR" en el Excel (TIPO, MARCA MOTOR, MARCA
-    CHASIS) se imprimen como "COMPLETAR" literal — el cliente los
-    completa a mano contra el Título del Automotor.
-  - Recuadros rojos semitransparentes (checkboxes tipo de documento y
-    fecha de nacimiento/estado civil del deudor) se imprimen siempre,
-    para todos los casos, indicando que deben completarse a mano.
+Tipos:
+  UVA_PI   → UVA + Prenda Inscripta  (col 4)
+  UVA_PRE  → UVA + Pre-prenda        (col 5)
+  FIJA_PI  → FIJA + Prenda Inscripta (col 6)
+  FIJA_PRE → FIJA + Pre-prenda       (col 7)
 """
 
 import os, sys, re, io
 import openpyxl
+import datetime as _dt
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
-from reportlab.lib.colors import red, Color
+from reportlab.lib.colors import red
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from generar_prenda_autify_v7 import (
-    parsear_solicitud, parsear_carta_aprobacion, parsear_mutuo_prendario,
-    fmt_num, MM, STEP, W, H, gx, gy, draw, draw_box, TIPO_COL,
+from generar_prenda_autify_v7_working import (
+    parsear_solicitud, parsear_carta_aprobacion,
+    fmt_num, split_text,
+    MM, STEP, W, H, gx, gy, draw, draw_box,
 )
 
 SHEET_NAME = 'Parametros 03'
-
-# Hoja única en form03: todas las coordenadas son de la página 1.
-HOJA_FORM03 = 1
-
-
-# ── MAPEO Variable (col B del Excel) -> Variable_ID interno ─
-# El Variable_ID interno es una versión normalizada (sin espacios/acentos)
-# de la columna "Variable" del Excel, prefijada con F03_.
-def normalizar_variable(nombre):
-    n = nombre.strip().upper()
-    n = (n.replace('Á','A').replace('É','E').replace('Í','I')
-           .replace('Ó','O').replace('Ú','U').replace('Ñ','N'))
-    n = re.sub(r'[^A-Z0-9]+', '_', n).strip('_')
-    return f'F03_{n}'
+TIPO_COL = {
+    'UVA_PI':  4,
+    'UVA_PRE': 5,
+    'FIJA_PI': 6,
+    'FIJA_PRE': 7,
+}
 
 
-# ── CARGA DE CONFIGURACIÓN DESDE EXCEL ──────────────────────
-def cargar_config_form03(xlsx_path, tipo_op):
+def cargar_config_03(xlsx_path, tipo_op):
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise ValueError(f"No se encontró la hoja '{SHEET_NAME}' en {xlsx_path}")
     ws = wb[SHEET_NAME]
-
-    col_idx = TIPO_COL.get(tipo_op, 4)  # default columna D (UVA_PI)
+    col_idx = TIPO_COL.get(tipo_op, 4)
 
     entradas = []
-    for r in range(3, ws.max_row + 1):
-        coords = ws.cell(row=r, column=1).value
-        variable = ws.cell(row=r, column=2).value
-        val = ws.cell(row=r, column=col_idx).value
+    for r in range(2, ws.max_row + 1):
+        coords_raw = ws.cell(row=r, column=1).value
+        variable   = ws.cell(row=r, column=2).value
+        val        = ws.cell(row=r, column=col_idx).value
 
-        if coords is None or str(coords).strip() in ('', 'None'):
-            continue
-        if not variable:
-            continue
-        if val is None or str(val).strip() in ('', '(por completar)', 'N/A', 'None'):
-            continue
+        if not variable: continue
 
-        coords_str = str(coords)
-        variable_id = normalizar_variable(str(variable))
+        # Normalizar coordenadas que Excel convirtió a float (ej: 27101.0 → "27.101")
+        if isinstance(coords_raw, _dt.datetime):
+            coords_raw = None
+        elif isinstance(coords_raw, float) and coords_raw > 1000:
+            s = str(int(coords_raw))
+            if len(s) >= 4:
+                coords_raw = f"{s[:2]}.{s[2:]}"
+            else:
+                coords_raw = None
+
+        if not coords_raw: continue
+        cs = str(coords_raw).strip()
+        if cs in ('', 'None', '—'): continue
+        if not val or str(val).strip() in ('', '(por completar)', 'N/A', 'None'): continue
 
         entradas.append({
-            'variable_id': variable_id,
-            'coords_str': coords_str,
-            'valor_excel': str(val),
+            'coords_str': cs,
+            'variable': str(variable).strip(),
+            'valor': str(val).strip()
         })
 
     wb.close()
     return entradas
 
 
-# ── PARSEO DE COORDENADAS ───────────────────────────────────
-def parse_coords(coords_str):
-    """
-    Convierte un string de coordenadas en lista de tuplas.
-    Soporta:
-      - '22.16'              -> [(22, 16)]                  punto simple
-      - '20.37-45.37'        -> [(20, 37, 45, 37)]          rango de 1 línea
-                                  (ancho disponible para wrap; misma fila)
-      - '20.28-45.28\n20.32-45.32\n20.34-45.34'
-                              -> [(20,28,45,28),(20,32,45,32),(20,34,45,34)]
-      - '50.50-80.54'        -> [(50,50,80,54)]             recuadro
-                                  (filas distintas: r1 != r2)
-    Tanto los rangos de 1 línea como los recuadros se devuelven como
-    4-tuplas (col1,row1,col2,row2); el llamador decide cómo usarlos según
-    el campo (texto con ancho disponible vs. recuadro).
-    """
+def parse_c(coords_str):
+    """Parsea string de coordenadas a lista de tuplas (col, row) o (c1,r1,c2,r2)."""
     out = []
     for line in coords_str.split('\n'):
         line = line.strip()
         if not line: continue
-        if '-' in line:
-            a, b = line.split('-', 1)
-            c1, r1 = a.split('.'); c2, r2 = b.split('.')
+        line = re.sub(r'(\d),(\d)', r'\1.\2', line)
+        if '–' in line or (line.count('-') == 1 and not line.startswith('-')):
+            sep = '–' if '–' in line else '-'
+            a, b = line.split(sep, 1)
+            pa = a.split('.'); pb = b.split('.')
+            c1, r1 = pa[0], '.'.join(pa[1:])
+            c2, r2 = pb[0], '.'.join(pb[1:])
             out.append((float(c1), float(r1), float(c2), float(r2)))
         else:
-            c, r = line.split('.')
+            parts = line.split('.')
+            c = parts[0]; r = '.'.join(parts[1:])
             out.append((float(c), float(r)))
     return out
 
 
-# ── RESOLUCIÓN DE CADA VARIABLE ─────────────────────────────
-def pt(c):
-    """Extrae (col,row) de una tupla de coordenadas, sea punto (2) o rango/recuadro (4)."""
-    return (c[0], c[1])
+def pt(c): return (c[0], c[1])
 
 
-def resolver_form03(entrada, d):
-    """
-    Devuelve una lista de "comandos de dibujo":
-      ('text', col, row, texto, size)
-      ('box',  col1, row1, col2, row2)
-    """
-    vid   = entrada['variable_id']
-    val   = entrada['valor_excel']
-    coords = parse_coords(entrada['coords_str'])
+def resolver_03(variable, valor, coords, d):
     R = []
+    v = variable.lower().strip()
 
-    # ── Recuadros (rangos de 4 valores en una sola línea de coords) ──
-    if vid in ('F03_RECUADRO_CHECKBOXES_TIPO_DE_DOCUMENTO_DEL_DEUDOR',
-               'F03_RECUADRO_FECHA_NACIMIENTO_Y_ESTADO_CIVIL_DEL_DEUDOR'):
-        for c in coords:
-            if len(c) == 4:
-                R.append(('box', c[0], c[1], c[2], c[3]))
-        return R
+    def txt(c, r, t, sz=6.5): R.append(('text', c, r, t, sz))
+    def box(c1,r1,c2,r2):     R.append(('box',  c1,r1,c2,r2))
 
-    # ── Casos especiales que requieren lógica con datos parseados (d) ──
+    # ── Sección A: fecha, monto, dominio ─────────────────────
+    if v == 'dia':
+        for cc in coords: txt(*pt(cc), 'XX')
+    elif v == 'mes':
+        for cc in coords: txt(*pt(cc), 'XX')
+    elif v == 'año':
+        for cc in coords: txt(*pt(cc), 'XX')
+    elif 'monto insc' in v:
+        for cc in coords: txt(*pt(cc), fmt_num(d['monto_insc']), 7)
+    elif 'dominio' in v and 'garantía' in v or 'dominio' in v:
+        for cc in coords: txt(*pt(cc), d['dominio'])
 
-    if vid == 'F03_DIA':
+    # ── Sección D: acreedor (fijo) ────────────────────────────
+    elif 'cuit acreedor' in v:
+        for cc in coords: txt(*pt(cc), '33-50000517-9')
+    elif 'apellido y nombre acreedor' in v or ('apellido' in v and 'acreedor' in v):
+        # coords es lista de rangos [c1,r1,c2,r2] → usamos solo la primera línea
+        # BANCO SUPERVIELLE S.A. cabe en una sola línea
+        if coords: txt(coords[0][0], coords[0][1], 'BANCO SUPERVIELLE S.A.')
+    elif 'calle acreedor' in v:
+        for cc in coords: txt(*pt(cc), 'RECONQUISTA')
+    elif 'numero acreedor' in v:
+        for cc in coords: txt(*pt(cc), '330')
+    elif 'cp acreedor' in v:
+        for cc in coords: txt(*pt(cc), 'C1003ABH')
+    elif 'localidad acreedor' in v:
+        for cc in coords: txt(*pt(cc), 'C.A.B.A.')
+    elif 'personeria otorgada' in v:
+        for cc in coords: txt(*pt(cc), 'I.G.J')
+    elif 'datos de inscripcion' in v:
+        for cc in coords: txt(*pt(cc), 'N°7333 L28 TdeS por A 27-06-05', 6)
+    elif v == 'dia inscripcion':
+        for cc in coords: txt(*pt(cc), '27')
+    elif v == 'mes inscripcion':
+        for cc in coords: txt(*pt(cc), '06')
+    elif v == 'año inscripcion':
+        for cc in coords: txt(*pt(cc), '05')
+
+    # ── Sección E: deudor ─────────────────────────────────────
+    elif 'cuil deudor' in v:
+        for cc in coords: txt(*pt(cc), d['cuit'], 6.5)
+    elif 'apellido y nombre deudor' in v or ('apellido' in v and 'deudor' in v):
+        # coords tiene hasta 3 rangos (líneas 28, 32, 34 del form03)
+        # Calcular ancho en chars de la primera línea: (c2-c1) * ~1.5 chars/unidad ≈ 30 chars
+        nombre = d['nombre_completo']
+        l1, l2 = split_text(nombre, 26)
+        if coords:
+            txt(coords[0][0], coords[0][1], l1)
+        if l2 and len(coords) > 1:
+            txt(coords[1][0], coords[1][1], l2)
+    elif 'calle deudor' in v:
+        for cc in coords: txt(*pt(cc), d['dom_calle'])
+    elif 'numero deudor' in v:
+        for cc in coords: txt(*pt(cc), str(d['dom_num']))
+    elif 'piso deudor' in v:
+        if d.get('dom_piso') and str(d['dom_piso']) not in ('0', ''):
+            for cc in coords: txt(*pt(cc), str(d['dom_piso']))
+    elif 'dpto deudor' in v:
+        if d.get('dom_depto') and str(d['dom_depto']) not in ('', 'None'):
+            for cc in coords: txt(*pt(cc), str(d['dom_depto']))
+    elif 'cp deudor' in v:
+        for cc in coords: txt(*pt(cc), str(d['cod_postal']))
+    elif 'localidad deudor' in v:
+        for cc in coords: txt(*pt(cc), d['localidad'])
+    elif 'provincia deudor' in v:
+        for cc in coords: txt(*pt(cc), d['provincia'])
+    elif v == 'dni':
+        # "Tipo y Nº Documento" → ej: "DNI 40472714"
+        tipo_doc = d.get('tipo_doc', 'DNI')
+        for cc in coords: txt(*pt(cc), f"{tipo_doc} {d['dni']}")
+    elif 'dia nacimiento' in v:
+        dd = d['fecha_nac'].split('/')[0] if d.get('fecha_nac') else ''
+        for cc in coords: txt(*pt(cc), dd)
+    elif 'mes nacimiento' in v:
+        mm = d['fecha_nac'].split('/')[1] if d.get('fecha_nac') else ''
+        for cc in coords: txt(*pt(cc), mm)
+    elif 'año nacimiento' in v:
+        aa = d['fecha_nac'].split('/')[-1][-2:] if d.get('fecha_nac') else ''
+        for cc in coords: txt(*pt(cc), aa)
+    elif 'soltero' in v or v == 'estado civil':
+        if d.get('estado_civil', '').lower().startswith('solt'):
+            for cc in coords: txt(*pt(cc), 'X', 9)
+
+    # ── Sección F: firma ──────────────────────────────────────
+    elif 'firma' in v:
+        for cc in coords: txt(*pt(cc), 'X', 14)
+
+    # ── Sección G: automotor ──────────────────────────────────
+    elif v == 'dominio':
+        for cc in coords: txt(*pt(cc), d['dominio'])
+    elif v == 'marca':
+        for cc in coords: txt(*pt(cc), d['marca'])
+    elif v == 'tipo':
+        for cc in coords: txt(*pt(cc), 'COMPLETAR')
+    elif v == 'modelo':
+        for cc in coords: txt(*pt(cc), d['modelo'])
+    elif 'marca motor' in v:
+        for cc in coords: txt(*pt(cc), d.get('marca_motor', 'COMPLETAR'))
+    elif 'n de motor' in v or 'nº motor' in v or 'motor' in v:
+        for cc in coords: txt(*pt(cc), d['motor'])
+    elif 'marca chasis' in v:
+        for cc in coords: txt(*pt(cc), d.get('marca_chasis', 'COMPLETAR'))
+    elif 'n de chasis' in v or 'nº chasis' in v or 'chasis' in v:
+        for cc in coords: txt(*pt(cc), d['chasis'])
+
+    # ── Sección H: solicitud tipo ─────────────────────────────
+    elif 'solicitud tipo' in v:
+        for cc in coords: txt(*pt(cc), 'X', 9)
+
+    # ── Sección I: modalidades ────────────────────────────────
+    elif 'grado' in v:
+        for cc in coords: txt(*pt(cc), '1°', 7)
+    elif 'clausula de actualizacion' in v or 'clausula' in v:
+        for cc in coords: txt(*pt(cc), 'X', 9)
+    elif 'concepto' in v:
+        for cc in coords: txt(*pt(cc), 'X', 9)
+
+    # ── Recuadros (DNI marcado) ───────────────────────────────
+    elif valor == 'RECUADRO' or (not R and len(coords[0]) == 4):
         for cc in coords:
-            c, r = pt(cc); R.append(('text', c, r, 'XX'))
-        return R
-    if vid == 'F03_MES':
-        for cc in coords:
-            c, r = pt(cc); R.append(('text', c, r, 'XX'))
-        return R
-    if vid == 'F03_ANO':
-        for cc in coords:
-            c, r = pt(cc); R.append(('text', c, r, 'XX'))
-        return R
+            if len(cc) == 4: box(*cc)
 
-    if vid == 'F03_MONTO_INSC_PRENDA_NUMERO_EJ_56_433_264_00':
+    # ── Fallback: valor literal ───────────────────────────────
+    else:
         for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, fmt_num(d['monto_insc']), 7))
-        return R
+            if len(cc) == 2: txt(*pt(cc), valor)
 
-    if vid in ('F03_UNIDAD_GARANTIA_PRENDARIA_DOMINIO_EJ_AG018VE', 'F03_DOMINIO'):
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['dominio'], 7))
-        return R
-
-    if vid == 'F03_CUIT_ACREEDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, '33-50000517-9'))
-        return R
-
-    if vid == 'F03_APELLIDO_Y_NOMBRE_ACREEDOR':
-        return _wrap_3lineas(coords, 'BANCO SUPERVIELLE S.A.')
-
-    if vid == 'F03_CALLE_ACREEDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'RECONQUISTA'))
-        return R
-
-    if vid == 'F03_NUMERO_ACREEDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, '330'))
-        return R
-
-    if vid == 'F03_CP_ACREEDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'C1003ABH'))
-        return R
-
-    if vid == 'F03_LOCALIDAD_ACREEDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'C.A.B.A.'))
-        return R
-
-    if vid == 'F03_PERSONERIA_OTORGADA':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'I.G.J'))
-        return R
-
-    if vid == 'F03_DATOS_DE_INSCRIPCION':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'N°7333 L28 TdeS por A 27-06-05', 6))
-        return R
-
-    if vid == 'F03_DIA_INSCRIPCION':
-        for cc in coords:
-            c, r = pt(cc); R.append(('text', c, r, '27'))
-        return R
-    if vid == 'F03_MES_INSCRIPCION':
-        for cc in coords:
-            c, r = pt(cc); R.append(('text', c, r, '06'))
-        return R
-    if vid == 'F03_ANO_INSCRIPCION':
-        for cc in coords:
-            c, r = pt(cc); R.append(('text', c, r, '05'))
-        return R
-
-    if vid == 'F03_CUIL_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['cuit']))
-        return R
-
-    if vid == 'F03_APELLIDO_Y_NOMBRE_DEUDOR':
-        return _wrap_3lineas(coords, d['nombre_completo'])
-
-    if vid == 'F03_CALLE_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['dom_calle']))
-        return R
-
-    if vid == 'F03_NUMERO_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['dom_num']))
-        return R
-
-    if vid == 'F03_PISO_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['dom_piso']))
-        return R
-
-    if vid == 'F03_DPTO_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['dom_depto']))
-        return R
-
-    if vid == 'F03_CP_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d.get('cod_postal', '')))
-        return R
-
-    if vid == 'F03_LOCALIDAD_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['localidad']))
-        return R
-
-    if vid == 'F03_PROVINCIA_DEUDOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['provincia']))
-        return R
-
-    if vid == 'F03_DNI':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, f"DNI {d['dni']}"))
-        return R
-
-    if vid in ('F03_DIA_NACIMIENTO','F03_MES_NACIMIENTO','F03_ANO_NACIMIENTO'):
-        dd_n, mm_n, yyyy_n = ('', '', '')
-        if d.get('fecha_nac'):
-            try:
-                dd_n, mm_n, yyyy_n = d['fecha_nac'].split('/')
-            except ValueError:
-                pass
-        valores = {'F03_DIA_NACIMIENTO': dd_n,
-                   'F03_MES_NACIMIENTO': mm_n,
-                   'F03_ANO_NACIMIENTO': yyyy_n[-2:] if yyyy_n else ''}
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, valores[vid]))
-        return R
-
-    if vid == 'F03_FIRMA':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'X', 14))
-        return R
-
-    if vid == 'F03_MARCA':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['marca']))
-        return R
-
-    if vid == 'F03_TIPO':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'COMPLETAR'))
-        return R
-
-    if vid == 'F03_MODELO':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['modelo']))
-        return R
-
-    if vid == 'F03_MARCA_MOTOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'COMPLETAR'))
-        return R
-
-    if vid == 'F03_N_DE_MOTOR':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['motor']))
-        return R
-
-    if vid == 'F03_MARCA_CHASIS':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'COMPLETAR'))
-        return R
-
-    if vid == 'F03_N_DE_CHASIS':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, d['chasis']))
-        return R
-
-    if vid == 'F03_SOLICITUD_TIPO':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'X', 9))
-        return R
-
-    if vid == 'F03_GRADO':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, '1°'))
-        return R
-
-    if vid == 'F03_CLAUSULA_DE_ACTUALIZACION':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'X', 9))
-        return R
-
-    if vid == 'F03_CONCEPTO':
-        for cc in coords:
-            c, r = pt(cc)
-            R.append(('text', c, r, 'X', 9))
-        return R
-
-    # Variable sin lógica definida -> avisar
-    print(f"  ⚠ Variable_ID sin lógica de resolución: '{vid}'")
     return R
 
 
-def _wrap_3lineas(coords, texto):
-    """
-    Distribuye 'texto' en hasta 3 líneas usando las coordenadas dadas.
-    Cada entrada de 'coords' es un rango (col1,row1,col2,row2) que
-    representa el ancho disponible de esa línea; (col1,row1) es el punto
-    de inicio del texto y (col2-col1) columnas el ancho disponible
-    (~1.5 caracteres por columna a tamaño 6.5). Wrap solo si el texto no
-    entra en una línea — igual que H1_BIEN en el contrato de prenda.
-    """
-    R = []
-    resto = texto
-    for i, c in enumerate(coords):
-        if not resto:
-            break
-        col1, row1 = c[0], c[1]
-        ancho_cols = (c[2] - c[0]) if len(c) == 4 else 25
-        max_chars = max(int(ancho_cols * 1.5), 5)
-        if len(resto) <= max_chars or i == len(coords) - 1:
-            R.append(('text', col1, row1, resto))
-            resto = ''
-        else:
-            cut = resto[:max_chars].rfind(' ')
-            if cut < 0: cut = max_chars
-            R.append(('text', col1, row1, resto[:cut]))
-            resto = resto[cut+1:]
-    return R
-
-
-# ── GENERADOR PRINCIPAL ─────────────────────────────────────
 def generar_form03(solicitud_path, template_path, output_path, xlsx_path,
-                    tipo_op='UVA_PI', carta_path=None, mutuo_path=None):
-
+                   tipo_op='UVA_PI', carta_path=None):
     if tipo_op not in TIPO_COL:
         print(f"⚠ Tipo '{tipo_op}' no válido. Usando UVA_PI.")
         tipo_op = 'UVA_PI'
 
-    if tipo_op.startswith('FIJA'):
-        print(f"⚠ El tipo '{tipo_op}' todavía no tiene valores definidos para el "
-              f"Formulario 03 (columna pendiente '(por completar)'). "
-              f"El PDF se generará sin overlay de datos.")
-
     print(f"Tipo de operación : {tipo_op}")
-    print(f"Config Excel      : {xlsx_path} (hoja '{SHEET_NAME}')")
+    print(f"Config Excel      : {xlsx_path}")
     print("Parseando solicitud...")
     d = parsear_solicitud(solicitud_path)
     d['tipo_op'] = tipo_op
 
-    print("Parseando carta de aprobación...")
-    carta_data = parsear_carta_aprobacion(carta_path)
-    d.update(carta_data)
-    if not d.get('marca') and carta_data.get('carta_marca'):
-        d['marca'] = carta_data['carta_marca']
-    if not d.get('modelo') and carta_data.get('carta_modelo'):
-        d['modelo'] = carta_data['carta_modelo']
-    if not d.get('chasis'):
-        d['chasis'] = 'COMPLETAR CORRECTAMENTE'
-    if not d.get('motor'):
-        d['motor'] = 'COMPLETAR CORRECTAMENTE'
+    if carta_path:
+        print("Parseando carta de aprobación...")
+        from generar_prenda_autify_v7_working import parsear_carta_aprobacion
+        carta = parsear_carta_aprobacion(carta_path)
+        d.update(carta)
+        # Fallback: si el parser no extrajo del PDF de solicitud (UVA), tomar de carta
+        for campo, clave in [('marca','carta_marca'), ('modelo','carta_modelo'),
+                              ('anio','carta_anio'), ('categoria','carta_categoria'),
+                              ('uso','carta_uso')]:
+            if not d.get(campo) and d.get(clave):
+                d[campo] = d[clave]
 
-    if tipo_op.endswith('_PRE'):
-        print("Parseando mutuo prendario (caso Pre-prenda)...")
-        d.update(parsear_mutuo_prendario(mutuo_path))
+    # Fallback chasis/motor desde solicitud con parser secundario si quedaron vacíos
+    if not d.get('chasis') or not d.get('motor'):
+        import pdfplumber, re as _re
+        try:
+            with pdfplumber.open(solicitud_path) as pdf:
+                t = ' '.join(p.extract_text() or '' for p in pdf.pages[:3])
+                t = _re.sub(r'\s+', ' ', t)
+            if not d.get('chasis'):
+                m = _re.search(r'N[°º]\s*Chasis[:\s]+(\S+)', t, _re.I)
+                if m: d['chasis'] = m.group(1).strip()
+            if not d.get('motor'):
+                m = _re.search(r'N[°º]\s*Motor[:\s]+(\S+)', t, _re.I)
+                if m: d['motor'] = m.group(1).strip()
+            if not d.get('marca'):
+                m = _re.search(r'Marca[:\s]+([A-Z]{2,15})', t)
+                if m: d['marca'] = m.group(1).strip()
+            if not d.get('modelo'):
+                m = _re.search(r'Modelo[:\s]+([^\n]{5,40}?)(?:\s+Valor|\s+Tipo)', t)
+                if m: d['modelo'] = _re.sub(r'\s+',' ', m.group(1)).strip()
+        except Exception:
+            pass
+    if not d.get('chasis'): d['chasis'] = 'COMPLETAR'
+    if not d.get('motor'):  d['motor']  = 'COMPLETAR'
 
-    entradas = cargar_config_form03(xlsx_path, tipo_op)
+    print("\nDatos clave:")
+    for k in ('nombre_completo','dni','cuit','dominio','marca','modelo','motor','chasis',
+               'monto_insc','localidad','provincia','dom_calle','dom_num','fecha_nac'):
+        print(f"  {k:<20}: {d.get(k,'')}")
+
+    entradas = cargar_config_03(xlsx_path, tipo_op)
     print(f"\nCampos activos para {tipo_op}: {len(entradas)}")
+
+    # Agregar recuadros DNI (filas 33 y 38 del Excel — coords sueltas sin variable)
+    entradas.append({'coords_str': '50.50-80.54', 'variable': 'Recuadro DNI 1', 'valor': 'RECUADRO'})
+    entradas.append({'coords_str': '60.60-80.64', 'variable': 'Recuadro DNI 2', 'valor': 'RECUADRO'})
 
     reader = PdfReader(template_path)
     writer = PdfWriter()
 
     for i, page in enumerate(reader.pages):
-        hoja_num = i + 1
         packet = io.BytesIO()
         cv = canvas.Canvas(packet, pagesize=(W, H))
 
-        if hoja_num == HOJA_FORM03:
+        # Form03 es 1 hoja — solo procesamos hoja 1
+        if i == 0:
             for e in entradas:
-                comandos = resolver_form03(e, d)
+                coords = parse_c(e['coords_str'])
+                comandos = resolver_03(e['variable'], e['valor'], coords, d)
                 for cmd in comandos:
                     if cmd[0] == 'text':
-                        _, c, r, texto, *rest = cmd
-                        size = rest[0] if rest else 6.5
-                        draw(cv, c, r, texto, size)
+                        _, col, row, texto, *rest = cmd
+                        sz = rest[0] if rest else 6.5
+                        draw(cv, col, row, str(texto), sz)
                     elif cmd[0] == 'box':
-                        _, c1, r1, c2, r2 = cmd
-                        draw_box(cv, c1, r1, c2, r2, fill_color=red, alpha=0.12)
+                        _, c1,r1,c2,r2 = cmd
+                        draw_box(cv, c1,r1,c2,r2, fill_color=red, alpha=0.12)
 
         cv.showPage(); cv.save(); packet.seek(0)
         page.merge_page(PdfReader(packet).pages[0])
@@ -471,22 +327,20 @@ def generar_form03(solicitud_path, template_path, output_path, xlsx_path,
 
     with open(output_path, 'wb') as f:
         writer.write(f)
-    print(f"\n✓ PDF generado: {output_path}")
+    print(f"\n✓ Form03 generado: {output_path}")
 
 
-# ── ENTRY POINT ─────────────────────────────────────────────
 if __name__ == '__main__':
-    sol      = sys.argv[1] if len(sys.argv) > 1 else None
-    template = sys.argv[2] if len(sys.argv) > 2 else '/mnt/user-data/uploads/form03_grilla.pdf'
-    out      = sys.argv[3] if len(sys.argv) > 3 else '/home/claude/form03_completado.pdf'
-    xlsx     = sys.argv[4] if len(sys.argv) > 4 else '/mnt/user-data/outputs/parametros_contrato_prenda.xlsx'
-    tipo_op  = sys.argv[5] if len(sys.argv) > 5 else 'UVA_PI'
-    carta    = sys.argv[6] if len(sys.argv) > 6 else None
-    mutuo    = sys.argv[7] if len(sys.argv) > 7 else None
+    sol      = sys.argv[1] if len(sys.argv)>1 else None
+    template = sys.argv[2] if len(sys.argv)>2 else '/home/claude/form03_grilla.pdf'
+    out      = sys.argv[3] if len(sys.argv)>3 else '/home/claude/work/form03_out.pdf'
+    xlsx     = sys.argv[4] if len(sys.argv)>4 else '/home/claude/parametros_contrato_prenda_v11.xlsx'
+    tipo_op  = sys.argv[5] if len(sys.argv)>5 else 'UVA_PI'
+    carta    = sys.argv[6] if len(sys.argv)>6 else None
 
     if not sol:
-        print("Uso: generar_form03_autify.py <solicitud.pdf> <template.pdf> <output.pdf> "
-              "<xlsx> [tipo_op] [carta.pdf] [mutuo.pdf]")
+        print("Uso: generar_form03_autify.py <solicitud.pdf> <template03.pdf> "
+              "<output.pdf> <xlsx> [tipo] [carta.pdf]")
         sys.exit(1)
 
-    generar_form03(sol, template, out, xlsx, tipo_op, carta, mutuo)
+    generar_form03(sol, template, out, xlsx, tipo_op, carta)
