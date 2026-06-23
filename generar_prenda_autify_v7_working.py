@@ -213,8 +213,8 @@ def parsear_solicitud(pdf_path):
     dom_raw = ex(t1,r'Domicilio:\s*([^\n]+?)Piso:')
     # La calle puede incluir números (ej: "CALLE 65"), por eso se permite
     # [A-ZÁÉÍÓÚÑ0-9 ] hasta el "Nº:" que marca el número de puerta.
-    dm=re.match(r'([A-ZÁÉÍÓÚÑ0-9 ]+?)\s*N[º°]:\s*(\d+)',dom_raw) if dom_raw else None
-    dom_calle = add_spaces(dm.group(1).strip()) if dm else add_spaces(ex(t1,r'Domicilio:\s*([A-ZÁÉÍÓÚÑ0-9 ]+?)\s*N[º°]'))
+    dm=re.match(r'([A-ZÁÉÍÓÚÜÑ0-9 ]+?)\s*N[º°]:\s*(\d+)',dom_raw) if dom_raw else None
+    dom_calle = add_spaces(dm.group(1).strip()) if dm else add_spaces(ex(t1,r'Domicilio:\s*([A-ZÁÉÍÓÚÜÑ0-9 ]+?)\s*N[º°]'))
     dom_num   = dm.group(2).strip() if dm else ex(t1,r'N[º°]:\s*(\d+)')
 
     # Si alguna "palabra" del dom_calle es demasiado larga para ser una sola
@@ -230,7 +230,7 @@ def parsear_solicitud(pdf_path):
                         wt = words_low[j]['text']
                         if re.search(r'^(Nº|N°|Nro|Piso|Depto|Código|CódigoPostal)', wt):
                             break
-                        if re.match(r'^[A-ZÁÉÍÓÚÑ0-9]+$', wt):
+                        if re.match(r'^[A-ZÁÉÍÓÚÜÑ0-9]+$', wt):
                             parts.append(wt)
                         else:
                             break
@@ -258,7 +258,7 @@ def parsear_solicitud(pdf_path):
                         wt = words_low[j]['text']
                         if re.search(r'^(Provincia|Provincia:|Buenos|Capital|Código)', wt):
                             break
-                        if re.match(r'^[A-ZÁÉÍÓÚÑ0-9]+$', wt):
+                        if re.match(r'^[A-ZÁÉÍÓÚÜÑ0-9]+$', wt):
                             parts.append(wt)
                         else:
                             break
