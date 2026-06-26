@@ -587,6 +587,9 @@ def resolver(variable_id, d):
     elif variable_id == 'H1_ESTADO_CIVIL':
         add(53, 76, d['estado_civil'])
 
+    elif variable_id == 'H1_HABITUALISTA':
+        add(37, 76, 'Entidad bancaria')
+
     elif variable_id == 'H1_ACTIVIDAD':
         add(85, 76, d['actividad'])
 
@@ -835,6 +838,7 @@ def _build_coords_vid():
     (1, '30.82–46.82'):                              'H1_IGJ',
     (1, '55.82'):                                    'H1_DNI_DEUDOR',
     (1, '60.86'):                                    'H1_FIRMA_DEUDOR',
+    (1, '37.76'):                                    'H1_HABITUALISTA',
     # HOJA 2
     (2, '—'):                                        'H2_CONDICIONAL',
     (2, '27.24'):                                    'H2_NOMBRE_SOLICITANTE',
