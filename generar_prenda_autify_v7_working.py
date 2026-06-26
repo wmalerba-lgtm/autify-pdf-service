@@ -207,15 +207,17 @@ def parsear_solicitud(pdf_path):
     fecha_nac = ex(t1,r'FechaNacimiento:\s*(\d{2}/\d{2}/\d{4})')
     est_civil = ex(t1,r'EstadoCivil:\s*(\w[\w/]*)').replace('/a','').strip()
     nac       = ex(t1,r'Nacionalidad:\s*(\w+)\s*Pais')
-    activ_raw = ex(t1,r'ActividadPrincipal:\s*([^\n]+?)(?:Antiguedad|$)').split('Antig')[0].strip()
+    activ_raw = ex(t1,r'Actividad\s*Principal:\s*([^\n]+?)(?:Antig|$)').split('Antig')[0].strip()
     activ     = add_spaces(activ_raw) if activ_raw else 'Autónomo'
 
-    dom_raw = ex(t1,r'Domicilio:\s*([^\n]+?)Piso:')
-    # La calle puede incluir números (ej: "CALLE 65"), por eso se permite
-    # [A-ZÁÉÍÓÚÑ0-9 ] hasta el "Nº:" que marca el número de puerta.
-    dm=re.match(r'([A-ZÁÉÍÓÚÜÑ0-9 ]+?)\s*N[º°]:\s*(\d+)',dom_raw) if dom_raw else None
-    dom_calle = add_spaces(dm.group(1).strip()) if dm else add_spaces(ex(t1,r'Domicilio:\s*([A-ZÁÉÍÓÚÜÑ0-9 ]+?)\s*N[º°]'))
-    dom_num   = dm.group(2).strip() if dm else ex(t1,r'N[º°]:\s*(\d+)')
+    # Aplanar saltos de línea para capturar domicilios que se parten en dos líneas
+    t1_flat = t1.replace('\n', ' ')
+    dom_raw = ex(t1_flat,r'Domicilio:\s*(.+?)\s*Piso:')
+    # dom_raw ya está acotado hasta "Piso:", se puede usar regex permisivo
+    # para separar calle de número. El Nº: con dos puntos identifica el número.
+    dm=re.match(r'(.+?)\s*N[º°]:\s*(\d+)',dom_raw) if dom_raw else None
+    dom_calle = add_spaces(dm.group(1).strip()) if dm else add_spaces(ex(t1_flat,r'Domicilio:\s*(.+?)\s*N[º°]'))
+    dom_num   = dm.group(2).strip() if dm else ex(t1_flat,r'Domicilio:.*?N[º°]:\s*(\d+)')
 
     # Si alguna "palabra" del dom_calle es demasiado larga para ser una sola
     # palabra real (> 8 chars sin espacio), reconstruir con x_tolerance=1.5
@@ -269,7 +271,7 @@ def parsear_solicitud(pdf_path):
             pass
     provincia = add_spaces(ex(t1,r'Provincia:\s*([A-ZÁÉÍÓÚÑA-Za-z ]+?)(?:Tel|Ingr|$)').strip())
 
-    tna       = ex(t1,r'TNA:\s*([\d.]+)%')
+    tna       = ex(t1,r'TNA:\s*([\d.,]+)%').replace(',','.')
     importe   = ex(t1,r'Importedel[Pp]r[eé]stamo:\s*\$\s*([\d.,]+)')
     uvas      = ex(t1,r'UVAsEquivalentes:\s*([\d.,]+)')
     monto_ins = ex(t1,r'MontoInsc\.Prenda:\s*\$\s*([\d.,]+)')
@@ -277,7 +279,7 @@ def parsear_solicitud(pdf_path):
     prim_venc = ex(t1,r'PrimerVencimiento:\s*(\d{2}/\d{2}/\d{4})')
     tasa_tipo = ex(t1,r'TasadeInter[eé]s:\s*(\w+)').upper() or 'FIJA'
     cuota_pura= ex(t1,r'CuotaPura:\s*\$\s*([\d.,]+)')
-    cftea_raw = ex(t1,r'CFTEA:\s*([\d.]+)%')
+    cftea_raw = ex(t1,r'CFTEA:\s*([\d.,]+)%').replace(',','.')
     uva_valor = ex(t1,r'ValorUVAsDía:\s*([\d.,]+)')
 
     marca  = ex(t1,r'Marca:\s*([A-Z]+)')
