@@ -85,18 +85,17 @@ def cargar_config_fija(xlsx_path, tipo_op):
                 coords_raw = f"{coords_raw.day}.{coords_raw.month}"
             else:
                 coords_raw = None  # desconocido, saltar
-        elif isinstance(coords_raw, float) and coords_raw > 1000:
-            # Números grandes como 30106.0 → probablemente "30.106" o coords con punto
-            # 30106 = col 30, fila 106 → "30.106"
-            var_key = str(variable).strip().lower() if variable else ''
+        elif isinstance(coords_raw, (int, float)) and not isinstance(coords_raw, bool) and coords_raw > 1000:
             s = str(int(coords_raw))
-            # Intentar reconstruir: primeros 2 dígitos = col, resto = fila
-            if len(s) >= 4:
-                col_part = s[:2]
-                row_part = s[2:]
-                coords_raw = f"{col_part}.{row_part}"
-            else:
-                coords_raw = None
+            coords_raw = f"{s[:2]}.{s[2:]}" if len(s) >= 4 else None
+        elif isinstance(coords_raw, str):
+            try:
+                n = int(coords_raw.strip())
+                if n > 1000:
+                    s = str(n)
+                    coords_raw = f"{s[:2]}.{s[2:]}" if len(s) >= 4 else None
+            except ValueError:
+                pass
 
         if not coords_raw: continue
         cs = str(coords_raw).strip()
