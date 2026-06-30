@@ -16,7 +16,7 @@ Tipos:
   FIJA_PRE → FIJA + Pre-prenda       (col 7)
 """
 
-import os, sys, re, io
+import os, sys, re, io, traceback
 import openpyxl
 import datetime as _dt
 from pypdf import PdfReader, PdfWriter
@@ -310,8 +310,12 @@ def generar_form03(solicitud_path, template_path, output_path, xlsx_path,
         # Form03 es 1 hoja — solo procesamos hoja 1
         if i == 0:
             for e in entradas:
-                coords = parse_c(e['coords_str'])
-                comandos = resolver_03(e['variable'], e['valor'], coords, d)
+                try:
+                    coords = parse_c(e['coords_str'])
+                    comandos = resolver_03(e['variable'], e['valor'], coords, d)
+                except Exception:
+                    print(f"  ERROR en entrada {e}: {traceback.format_exc()}", flush=True)
+                    raise
                 for cmd in comandos:
                     if cmd[0] == 'text':
                         _, col, row, texto, *rest = cmd
