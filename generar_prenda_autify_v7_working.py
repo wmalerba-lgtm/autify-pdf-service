@@ -102,6 +102,18 @@ def draw_box(cv, col1, row1, col2, row2, fill_color=None, alpha=0.15,
     cv.restoreState()
 
 
+def draw_circle(cv, col1, row1, col2, row2):
+    """Elipse roja alrededor del área (col1,row1)-(col2,row2) en coords de grilla."""
+    from reportlab.lib.colors import Color
+    x1, y1 = gx(col1), gy(row2)  # y1 = bottom en PDF (row2 es más abajo en grilla)
+    x2, y2 = gx(col2), gy(row1)  # y2 = top en PDF
+    cv.saveState()
+    cv.setStrokeColor(Color(1, 0, 0, alpha=0.9))
+    cv.setLineWidth(1.8)
+    cv.ellipse(x1, y1, x2, y2, stroke=1, fill=0)
+    cv.restoreState()
+
+
 # ── CONVERSIÓN NUMÉRICA ─────────────────────────────────────
 def numero_a_letras(n):
     uns  = ['','UNO','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE',
@@ -741,6 +753,7 @@ def resolver(variable_id, d):
     # ── HOJA 4 ──────────────────────────────────────────────
     elif variable_id == 'H4_CUOTAS':
         add(61, 7.5, d['cuotas'])
+        R.append((58.5, 6, '__CIRCLE__', 65, 9.5))  # círculo rojo alrededor
 
     elif variable_id == 'H4_FIRMA_DEUDOR':
         add(30, 110, 'X', 14)
@@ -1016,6 +1029,9 @@ def generar_pdf(solicitud_path, template_path, output_path,
                 if texto == '__BOX__':
                     col2, row2 = rest[0], rest[1]
                     draw_box(cv, col, row, col2, row2, fill_color=red, alpha=0.12)
+                elif texto == '__CIRCLE__':
+                    col2, row2 = rest[0], rest[1]
+                    draw_circle(cv, col, row, col2, row2)
                 else:
                     size = rest[0] if rest else 6.5
                     draw(cv, col, row, texto, size)

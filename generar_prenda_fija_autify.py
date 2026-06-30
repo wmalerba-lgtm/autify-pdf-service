@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from generar_prenda_autify_v7_working import (
     parsear_solicitud, parsear_carta_aprobacion,
     fmt_num, monto_letras, split_text,
-    MM, STEP, W, H, gx, gy, draw, draw_box,
+    MM, STEP, W, H, gx, gy, draw, draw_box, draw_circle,
 )
 
 SHEET_NAME = 'Parametros Contrato Prenda FIJA'
@@ -242,7 +242,10 @@ def resolver_fija(variable, valor, coords, d):
 
     # ── Cantidad de Cuotas (solo el número) ───────────────────
     elif 'cantidad' in v and 'cuotas' in v:
-        for cc in coords: txt(*pt(cc), d['cuotas'])
+        for cc in coords:
+            c, r = pt(cc)
+            txt(c, r, d['cuotas'])
+            R.append(('circle', c-1.5, r-1.5, c+3.5, r+1.5))  # círculo rojo
 
     # ── Vencimientos ──────────────────────────────────────────
     elif 'vencimientos' in v:
@@ -435,6 +438,9 @@ def generar_prenda_fija(solicitud_path, template_path, output_path,
                 elif cmd[0] == 'box':
                     _, c1,r1,c2,r2 = cmd
                     draw_box(cv, c1,r1,c2,r2, fill_color=red, alpha=0.12)
+                elif cmd[0] == 'circle':
+                    _, c1,r1,c2,r2 = cmd
+                    draw_circle(cv, c1,r1,c2,r2)
 
         cv.showPage(); cv.save(); packet.seek(0)
         page.merge_page(PdfReader(packet).pages[0])
