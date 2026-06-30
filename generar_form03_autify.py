@@ -54,15 +54,23 @@ def cargar_config_03(xlsx_path, tipo_op):
 
         if not variable: continue
 
-        # Normalizar coordenadas que Excel convirtió a float (ej: 27101.0 → "27.101")
+        # Normalizar coordenadas que Excel convirtió a float o int (ej: 27101 / 27101.0 → "27.101")
         if isinstance(coords_raw, _dt.datetime):
             coords_raw = None
-        elif isinstance(coords_raw, float) and coords_raw > 1000:
+        elif isinstance(coords_raw, (int, float)) and not isinstance(coords_raw, bool) and coords_raw > 1000:
             s = str(int(coords_raw))
             if len(s) >= 4:
                 coords_raw = f"{s[:2]}.{s[2:]}"
             else:
                 coords_raw = None
+        elif isinstance(coords_raw, str):
+            try:
+                n = int(coords_raw.strip())
+                if n > 1000:
+                    s = str(n)
+                    coords_raw = f"{s[:2]}.{s[2:]}" if len(s) >= 4 else None
+            except ValueError:
+                pass
 
         if not coords_raw: continue
         cs = str(coords_raw).strip()
